@@ -2,7 +2,7 @@
 # @Date:   2016-11-11
 # @Email:  hopperj@ampereinnotech.com
 # @Last modified by:   hopperj
-# @Last modified time: 2016-11-29
+# @Last modified time: 2016-11-30
 # @License: GPL3
 
 
@@ -13,6 +13,7 @@ import pymongo
 import click
 import logging
 from datetime import datetime
+from multiprocessing.dummy import Pool as ThreadPool
 
 class Config:
     def __init__(self):
@@ -66,29 +67,38 @@ def run(ctx, log_level, log, db_addr, db_port, db_name, db_url_name, db_data_nam
     ctx.obj.api_key = api_key
 
 
-# @run.command()
-# @click.argument('item_id', type=int, required=True)
-# @click.pass_context
-def get_item(item_collection, item_id, api_key):
-
-    if item_collection.find({'id':item_id}).count():
-        return
-
-    logging.info('getting item: %d'%item_id)
+def get_item(item_url):
     item_data = json.loads(
         requests.get(
-            'https://us.api.battle.net/wow/item/%d?locale=en_US&apikey=%s'%(item_id, api_key)
+            item_url
         ).text
     )
+    return item_data
 
 
-    item_collection.insert(item_data)
+def get_all_items(all_items, item_collection, api_key):
 
+
+    items_to_get = []
+
+    for item_id in all_items:
+        if not item_collection.find({'id':item_id}).count():
+            items_to_get.append('https://us.api.battle.net/wow/item/%s?locale=en_US&apikey=%s'%(item_id, api_key))
+
+    pool = ThreadPool(25)
+    results = pool.map(get_item, items_to_get)
+    pool.close()
+    pool.join()
+    print('found results:',results)
+    for result in results:
+        item_collection.insert(result)
 
 
 @run.command()
 @click.pass_context
 def pull(ctx):
+
+    ctx.obj.urls_collection.remove()
 
     logging.debug('Getting new AH data')
     url_data = json.loads(
@@ -117,7 +127,6 @@ def pull(ctx):
     logging.info('Data pulled for timestamp: %d'%url_data['lastModified'])
 
 
-    for auction in auction_data['auctions']:
-        # print('doing item: ',auction['item'])
-        # print(auction['item'])
-        get_item(ctx.obj.data_collection, auction['item'], ctx.obj.api_key)
+    all_items = [ auction['item'] for auction in auction_data['auctions'] ]
+
+    get_all_items(all_items, ctx.obj.item_collection, ctx.obj.api_key)
