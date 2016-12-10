@@ -2,7 +2,7 @@
 # @Date:   2016-11-11
 # @Email:  hopperj@ampereinnotech.com
 # @Last modified by:   hopperj
-# @Last modified time: 2016-12-09
+# @Last modified time: 2016-12-10
 # @License: GPL3
 
 
@@ -89,7 +89,6 @@ def get_all_items(all_items, item_collection, api_key):
     results = pool.map(get_item, items_to_get)
     pool.close()
     pool.join()
-    print('found results:',results)
     for result in results:
         item_collection.insert(result)
 
@@ -109,6 +108,7 @@ def pull(ctx):
     url_data = url_data['files'][0]
 
     timestamp = datetime.fromtimestamp(url_data['lastModified']/1e3)
+    url_data['lastModified'] = timestamp
 
     if ctx.obj.urls_collection.find({'lastModified':url_data['lastModified']}).count():
         logging.info('No update found')
@@ -137,21 +137,14 @@ def pull(ctx):
         )
 
 
-    ctx.obj.data_collection.insert_many(
-        parsed_auctions,
-    )
-
-    # return
-
-    # ctx.obj.data_collection.insert(
-    #     auction_data,
-    # )
-
-    ctx.obj.urls_collection.insert(url_data)
-
-    logging.info('Data pulled for timestamp: %d'%url_data['lastModified'])
+    logging.info('Data pulled for timestamp: %s'%url_data['lastModified'])
 
 
     all_items = [ auction['item'] for auction in auction_data['auctions'] ]
 
     get_all_items(all_items, ctx.obj.item_collection, ctx.obj.api_key)
+    ctx.obj.data_collection.insert_many(
+        parsed_auctions,
+    )
+
+    ctx.obj.urls_collection.insert(url_data)
