@@ -2,7 +2,7 @@
 # @Date:   2016-11-11
 # @Email:  hopperj@ampereinnotech.com
 # @Last modified by:   hopperj
-# @Last modified time: 2016-11-30
+# @Last modified time: 2016-12-09
 # @License: GPL3
 
 
@@ -98,18 +98,18 @@ def get_all_items(all_items, item_collection, api_key):
 @click.pass_context
 def pull(ctx):
 
-    #ctx.obj.urls_collection.remove()
-
     logging.debug('Getting new AH data')
     url_data = json.loads(
         requests.get(
             'https://us.api.battle.net/wow/auction/data/wildhammer?locale=en_US&apikey=%s'%ctx.obj.api_key
         ).text
-    )#['files'][0]
+    )
 
     print('url_data',url_data)
     url_data = url_data['files'][0]
-    
+
+    timestamp = datetime.fromtimestamp(url_data['lastModified']/1e3)
+
     if ctx.obj.urls_collection.find({'lastModified':url_data['lastModified']}).count():
         logging.info('No update found')
         return
@@ -121,9 +121,32 @@ def pull(ctx):
         ).text
     )
 
-    ctx.obj.data_collection.insert(
-        auction_data,
+    parsed_auctions = []
+
+    for auction in auction_data['auctions']:
+
+        auction.update(
+            {
+                'timestamp':timestamp,
+                'url':url_data['url']
+            }
+        )
+
+        parsed_auctions.append(
+            auction
+        )
+
+
+    ctx.obj.data_collection.insert_many(
+        parsed_auctions,
     )
+
+    # return
+
+    # ctx.obj.data_collection.insert(
+    #     auction_data,
+    # )
+
     ctx.obj.urls_collection.insert(url_data)
 
     logging.info('Data pulled for timestamp: %d'%url_data['lastModified'])
