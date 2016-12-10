@@ -30,7 +30,7 @@ log_levels = {
 
 
 @click.group(invoke_without_command=True)
-@click.option('--log-level', default='info')
+@click.option('--log-level', default='debug')
 @click.option('--log', default=False)
 @click.option('--db-addr', default='localhost', required=False)
 @click.option('--db-port', default=27017, required=False)
@@ -85,7 +85,7 @@ def get_all_items(all_items, item_collection, api_key):
         if not item_collection.find({'id':item_id}).count():
             items_to_get.append('https://us.api.battle.net/wow/item/%s?locale=en_US&apikey=%s'%(item_id, api_key))
 
-    pool = ThreadPool(25)
+    pool = ThreadPool(5)
     results = pool.map(get_item, items_to_get)
     pool.close()
     pool.join()
@@ -98,16 +98,18 @@ def get_all_items(all_items, item_collection, api_key):
 @click.pass_context
 def pull(ctx):
 
-    ctx.obj.urls_collection.remove()
+    #ctx.obj.urls_collection.remove()
 
     logging.debug('Getting new AH data')
     url_data = json.loads(
         requests.get(
             'https://us.api.battle.net/wow/auction/data/wildhammer?locale=en_US&apikey=%s'%ctx.obj.api_key
         ).text
-    )['files'][0]
+    )#['files'][0]
 
-
+    print('url_data',url_data)
+    url_data = url_data['files'][0]
+    
     if ctx.obj.urls_collection.find({'lastModified':url_data['lastModified']}).count():
         logging.info('No update found')
         return
