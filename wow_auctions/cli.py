@@ -14,11 +14,14 @@ import click
 import logging
 from datetime import datetime
 from multiprocessing.dummy import Pool as ThreadPool
+import numpy as np
+from numpy import average
 
 class Config:
     def __init__(self):
         pass
 
+gold_conv = 1e4
 
 log_levels = {
     'debug': logging.DEBUG,
@@ -32,15 +35,13 @@ log_levels = {
 @click.group(invoke_without_command=True)
 @click.option('--log-level', default='debug')
 @click.option('--log', default=False)
-@click.option('--db-addr', default='localhost', required=False)
-@click.option('--db-port', default=27017, required=False)
-@click.option('--db-name', default='wow_auctions', required=False)
+@click.option('--db-uri', required=True)
 @click.option('--db-url-name', default='urls', required=False)
 @click.option('--db-data-name', default='auctions', required=False)
 @click.option('--db-item-name', default='items', required=False)
 @click.option('--api-key', required=True)
 @click.pass_context
-def run(ctx, log_level, log, db_addr, db_port, db_name, db_url_name, db_data_name, db_item_name, api_key):
+def run(ctx, log_level, log, db_uri, db_url_name, db_data_name, db_item_name, api_key):
 
 
     log_level = log_levels[log_level]
@@ -55,11 +56,10 @@ def run(ctx, log_level, log, db_addr, db_port, db_name, db_url_name, db_data_nam
     ctx.obj = Config()
 
     connection = pymongo.MongoClient(
-    db_addr,
-    db_port,
+        db_uri,
     )
 
-    ctx.obj.db = connection[db_name]
+    ctx.obj.db = connection[db_uri.split('/')[-1]]
     ctx.obj.urls_collection = ctx.obj.db[db_url_name]
     ctx.obj.data_collection = ctx.obj.db[db_data_name]
     ctx.obj.item_collection = ctx.obj.db[db_item_name]
@@ -90,61 +90,129 @@ def get_all_items(all_items, item_collection, api_key):
     pool.close()
     pool.join()
     for result in results:
-        item_collection.insert(result)
+        logging.info('Inseting data for item: %s'%result['name'])
+        item_collection.update(result, result, upsert=True)
 
+
+
+def get_data_url(url):
+    logging.debug('Getting new AH data')
+    url_data = json.loads(
+        requests.get(
+            url
+        ).text
+    )
+
+    url_data = url_data['files'][0]
+
+    timestamp = datetime.fromtimestamp(url_data['lastModified']/1e3)
+    del url_data['lastModified']
+    url_data['timestamp'] = timestamp
+
+    return url_data
+        
+
+def pull_auction_data(url):
+    logging.debug('Pulling new data...')
+    auction_data = json.loads(
+        requests.get(
+            url
+        ).text
+    )
+    return auction_data
+
+    
+def process_data(auction_data, data_url, ctx):
+    parsed_auctions = []
+    logging.info('Processing auction data')
+
+    for auction in auction_data['auctions']:
+        auction.update(
+            {
+                'timestamp':data_url['timestamp'],
+            }
+        )
+        
+        parsed_auctions.append(
+            auction
+        )
+    
+
+    tmp = ctx.obj.data_collection.find( auction_data['auctions'][0] )
+
+    if tmp.count():
+        logging.info('Auction data already stored')
+        logging.info(tmp.count())
+        logging.info(tmp)
+        logging.info(auction_data['auctions'][0])
+        return
+    
+    logging.info('Processed %d auctions'%len(parsed_auctions))
+
+    logging.info('Auction data processed for timestamp: %s'%data_url['timestamp'])
+
+
+    all_items = [ auction['item'] for auction in auction_data['auctions'] ]
+    get_all_items(all_items, ctx.obj.item_collection, ctx.obj.api_key)
+    logging.info('Updated items')
+
+    ctx.obj.data_collection.insert(
+        parsed_auctions,
+    )
+    logging.info('Auctions inserted')
+
+    logging.debug('grouping items')
+
+    item_stats = [ calc_stats(i) for i in group_items(parsed_auctions).values() ]
+    if ctx.obj.item_stats.find({'timestamp':date}).count():
+        return
+    ctx.obj.item_stats.insert_many(item_stats)
+
+def group_items(auctions):
+    item_auctions = {}
+    for i,auction in enumerate(auctions):
+        if str(auction['item']) not in item_auctions:
+            item_auctions[ str(auction['item']) ] = []
+            logging.debug('Adding key for item id: %d'%auction['item'])
+        item_auctions[ str(auction['item']) ].append( auction )
+
+    return item_auctions
+
+def calc_stats(item_auctions):
+    buyouts = [ max(a['buyout'], a['bid'])/float(a['quantity']) for a in item_auctions]
+    stats = {
+        'item':item_auctions[0]['item'],
+        'timestamp':item_auctions[0]['timestamp'],
+        'min':min(buyouts)/gold_conv,
+        'average':average(buyouts)/gold_conv,
+        'max':max(buyouts)/gold_conv,
+        'count':sum([ a['quantity'] for a in item_auctions ]),
+        'std':np.std(buyouts)/gold_conv
+    }
+    
+    return stats
 
 @run.command()
 @click.pass_context
 def pull(ctx):
+    url = 'https://us.api.battle.net/wow/auction/data/wildhammer?locale=en_US&apikey=%s'%ctx.obj.api_key
+    logging.info('Pulling AH data for url: %s'%url)
+    data_url = get_data_url(url)
+    auction_data = pull_auction_data(data_url['url'])
+    process_data(auction_data, data_url, ctx)
 
-    logging.debug('Getting new AH data')
-    url_data = json.loads(
-        requests.get(
-            'https://us.api.battle.net/wow/auction/data/wildhammer?locale=en_US&apikey=%s'%ctx.obj.api_key
-        ).text
-    )
 
-    print('url_data',url_data)
-    url_data = url_data['files'][0]
+@run.command()
+@click.pass_context
+def pull_new(ctx):
+    url = 'https://us.api.battle.net/wow/auction/data/wildhammer?locale=en_US&apikey=%s'%ctx.obj.api_key
+    logging.info('Pulling new AH data')
+    data_url = get_data_url(url)
 
-    timestamp = datetime.fromtimestamp(url_data['lastModified']/1e3)
-    url_data['lastModified'] = timestamp
-
-    if ctx.obj.urls_collection.find({'lastModified':url_data['lastModified']}).count():
+    if ctx.obj.data_collection.find( {'timestamp':data_url['timestamp']}).count():
         logging.info('No update found')
         return
 
+    auction_data = pull_auction_data(data_url['url'])
 
-    auction_data = json.loads(
-        requests.get(
-            url_data['url']
-        ).text
-    )
-
-    parsed_auctions = []
-
-    for auction in auction_data['auctions']:
-
-        auction.update(
-            {
-                'timestamp':timestamp,
-                'url':url_data['url']
-            }
-        )
-
-        parsed_auctions.append(
-            auction
-        )
-
-
-    logging.info('Data pulled for timestamp: %s'%url_data['lastModified'])
-
-
-    all_items = [ auction['item'] for auction in auction_data['auctions'] ]
-
-    get_all_items(all_items, ctx.obj.item_collection, ctx.obj.api_key)
-    ctx.obj.data_collection.insert_many(
-        parsed_auctions,
-    )
-
-    ctx.obj.urls_collection.insert(url_data)
+    process_data(auction_data, data_url, ctx)

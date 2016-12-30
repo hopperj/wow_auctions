@@ -6,11 +6,10 @@
 # @License: GPL3
 
 
-def get_database(db_addr, db_port):
+def get_database(db_uri):
 
     connection = pymongo.MongoClient(
-        db_addr,
-        db_port
+        db_uri
     )
 
 
